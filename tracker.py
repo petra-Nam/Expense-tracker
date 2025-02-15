@@ -1,4 +1,4 @@
-
+ 
 import os
 import re
 from datetime import datetime
@@ -43,19 +43,21 @@ def validate_email(email):
     return re.match(email_regex, email) is not None
 
 # Create a new profile
-def create_profile(email, name, age, income, budget):
+def create_profile():
+    email = input("Enter your email: ")
     if not validate_email(email):
         print("Invalid email address.")
         return
 
+    name = input("Enter your name: ")
     if not name:
         print("Invalid name.")
         return
 
     try:
-        age = int(age)
-        income = float(income)
-        budget = float(budget)
+        age = int(input("Enter your age: "))
+        income = float(input("Enter your monthly income (€): "))
+        budget = float(input("Enter your total monthly budget (€): "))
     except ValueError:
         print("Invalid input. Please enter valid numbers for age, income, and budget.")
         return
@@ -95,26 +97,26 @@ def get_category_total(df, category):
     return df[df['Category'] == category]['Amount'].sum()
 
 # Add expense
-def add_expense(expenses_file, df, budget, expense):
-    date = expense['date'] or datetime.now().strftime('%Y-%m-%d')
+def add_expense(expenses_file, df, budget, expenses_by_month):
+    date = input("Enter the date (YYYY-MM-DD) or press Enter for today: ") or datetime.now().strftime('%Y-%m-%d')
     try:
         datetime.strptime(date, '%Y-%m-%d')
     except ValueError:
         print("Invalid date format. Please enter the date in YYYY-MM-DD format.")
-        return df
+        return df, expenses_by_month
 
-    category = expense['category'].capitalize()
+    category = input(f"Enter the category ({', '.join(CATEGORIES)}): ").capitalize()
     if category not in CATEGORIES:
         print("Invalid category. Please choose from the predefined categories.")
-        return df
+        return df, expenses_by_month
 
     try:
-        amount = float(expense['amount'])
+        amount = float(input("Enter the amount (€): "))
     except ValueError:
         print("Invalid amount. Please enter a valid number.")
-        return df
+        return df, expenses_by_month
 
-    description = expense['description'] or ""
+    description = input("Enter a description (optional): ") or ""
 
     new_expense = {'Date': date, 'Category': category, 'Amount': amount, 'Description': description}
     df = pd.concat([df, pd.DataFrame([new_expense])], ignore_index=True)
@@ -123,29 +125,36 @@ def add_expense(expenses_file, df, budget, expense):
 
     # Update the expenses by month for the remaining budget calculation
     month = date[:7]  # Get the YYYY-MM format
-    if month not in expense['expenses_by_month']:
-        expense['expenses_by_month'][month] = 0
-    expense['expenses_by_month'][month] += amount
+    if month not in expenses_by_month:
+        expenses_by_month[month] = 0
+    expenses_by_month[month] += amount
 
     # Calculate remaining budget
-    total_spent = expense['expenses_by_month'].get(month, 0)
+    total_spent = expenses_by_month.get(month, 0)
     remaining_budget = budget - total_spent
     print(f"Remaining Budget for {month}: €{remaining_budget:.2f}")
 
-    return df
+    return df, expenses_by_month
 
 # Edit/Delete expense
-def edit_delete_expense(expenses_file, df, index, action, expense_details):
+def edit_delete_expense(expenses_file, df):
     if df.empty:
         print("No expenses to edit or delete.")
         return df
 
+    print(df)
+    index = int(input("Enter the index of the expense to edit/delete: "))
     if index < 0 or index >= len(df):
         print("Invalid index. Please try again.")
         return df
 
+    action = input("Type 'edit' to modify or 'delete' to remove this expense: ").strip().lower()
     if action == 'edit':
-        df.loc[index] = expense_details
+        date = input(f"Enter new date (current: {df.at[index, 'Date']}): ") or df.at[index, 'Date']
+        category = input(f"Enter new category (current: {df.at[index, 'Category']}): ") or df.at[index, 'Category']
+        amount = input(f"Enter new amount (current: {df.at[index, 'Amount']}): ") or df.at[index, 'Amount']
+        description = input(f"Enter new description (current: {df.at[index, 'Description']}): ") or df.at[index, 'Description']
+        df.loc[index] = [date, category, float(amount), description]
         print("Expense updated successfully!")
     elif action == 'delete':
         df = df.drop(index).reset_index(drop=True)
@@ -259,37 +268,97 @@ def plot_heatmap(df):
     plt.ylabel('Month')
     plt.show()
 
-if __name__ == "__main__":
+# Show expense management tips
+def show_expense_management_tips():
+    tips = """
+    Expense Management Tips:
+    1. Track your expenses regularly.
+    2. Create a detailed budget and stick to it.
+    3. Prioritize your spending. Focus on needs before wants.
+    4. Use cash for discretionary spending to avoid overspending.
+    5. Save money by preparing meals at home instead of dining out.
+    6. Negotiate better rates for recurring expenses (e.g., insurance, subscriptions).
+    7. Automate savings to ensure your financial goals are met.
+    8. Review your budget periodically and make adjustments as necessary.
+    """
+    print(tips)
+
+def main():
     initialize_profiles_file()
 
-    # Example profile creation
-    create_profile("test@example.com", "John Doe", 30, 3000, 2000)
+    account_exists = input("Do you already have an account? (yes/no): ").strip().lower()
 
-    # Example expense management
-    email = "test@example.com"
+    if account_exists == 'yes':
+        email = input("Enter your email: ").strip()
+        if not user_exists(email):
+            print("No profile found for this email.")
+            return
+    else:
+        create_profile()
+        email = input("Enter your email: ").strip()
+
     expenses_file, df = handle_expenses_file(email)
     profiles_df = load_profiles()
     user_profile = profiles_df[profiles_df['Email'] == email].iloc[0]
     budget = user_profile['Budget']
     expenses_by_month = {}
 
-    # Example add expense
-    expense = {'date': '2023-10-01', 'category': 'Groceries', 'amount': 50, 'description': 'Food shopping', 'expenses_by_month': expenses_by_month}
-    df = add_expense(expenses_file, df, budget, expense)
+    while True:
+        print("\nMenu:")
+        print("1. View Expenses")
+        print("2. Add Expense")
+        print("3. Edit/Delete Expense")
+        print("4. View Monthly Summary")
+        print("5. Plot Expenses by Category")
+        print("6. View Budget Trend")
+        print("7. Plot Heatmap")
+        print("8. Expense Management Tips")
+        print("9. Exit")
+        choice = input("Enter your choice: ").strip()
 
-    # View expenses
-    view_expenses(df)
+        if choice == '1':
+            view_expenses(df)
+        elif choice == '2':
+            df, expenses_by_month = add_expense(expenses_file, df, budget, expenses_by_month)
+        elif choice == '3':
+            df = edit_delete_expense(expenses_file, df)
+        elif choice == '4':
+            year = int(input("Enter the year (e.g., 2023): "))
+            month = int(input("Enter the month (1-12): "))
+            if month < 1 or month > 12:
+                print("Invalid month. Please try again.")
+                continue
+            total_expenses = get_monthly_expenses(df, year, month)
+            category_totals = get_category_totals(df, year, month)
+            print(f"Total expenses for {datetime(year, month, 1).strftime('%B %Y')}: €{total_expenses:.2f}")
+            print("Category breakdown:")
+            for category, amount in category_totals.items():
+                print(f"{category}: €{amount:.2f}")
+        elif choice == '5':
+            year = int(input("Enter the year (e.g., 2023): "))
+            month = int(input("Enter the month (1-12): "))
+            if month < 1 or month > 12:
+                print("Invalid month. Please try again.")
+                continue
+            plot_expenses_by_category(df, year, month, budget)
+        elif choice == '6':
+            monthly_expenses, forecast_df = train_and_predict_model(df)
+            if monthly_expenses is not None and forecast_df is not None:
+                plot_budget_trend(monthly_expenses, forecast_df, budget)
+        elif choice == '7':
+            plot_heatmap(df)
+        elif choice == '8':
+            show_expense_management_tips()
+        elif choice == '9':
+            print("Exiting...")
+            break
+        else:
+            print("Invalid choice. Please try again.")
 
-    # Example edit/delete expense
-    df = edit_delete_expense(expenses_file, df, 0, 'edit', ['2023-10-01', 'Groceries', 55, 'Updated food shopping'])
+        continue_choice = input("Do you want to continue? (yes/no): ").strip().lower()
+        if continue_choice != 'yes':
+            print("Exiting...")
+            break
 
-    # Plot expenses by category
-    plot_expenses_by_category(df, 2023, 10, budget)
-
-    # Train and predict model
-    monthly_expenses, forecast_df = train_and_predict_model(df)
-    if monthly_expenses is not None and forecast_df is not None:
-        plot_budget_trend(monthly_expenses, forecast_df, budget)
-
-    # Plot heatmap
-    plot_heatmap(df)
+if __name__ == "__main__":
+    main()
