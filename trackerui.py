@@ -3,14 +3,18 @@ import os
 import re
 from datetime import datetime
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from dateutil.relativedelta import relativedelta
-from sklearn.linear_model import LinearRegression
-import numpy as np
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
 import tkinter as tk
 from tkinter import messagebox, simpledialog
-from tkinter import ttk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from ttkthemes import ThemedTk
+from tkinter import ttk
+import seaborn as sns
+from PIL import Image, ImageTk
 
 profiles_file = 'user_profiles.csv'
 
@@ -45,7 +49,12 @@ def validate_email(email):
     return re.match(email_regex, email) is not None
 
 # Create a new profile
-def create_profile(email):
+def create_profile():
+    email = simpledialog.askstring("Create Profile", "Enter your email:")
+    if not validate_email(email):
+        messagebox.showerror("Invalid Email", "Please enter a valid email address.")
+        return
+
     name = simpledialog.askstring("Create Profile", "Enter your name:")
     if not name:
         messagebox.showerror("Invalid Name", "Please enter a valid name.")
@@ -71,6 +80,7 @@ def create_profile(email):
     save_profiles(profiles_df)
 
     messagebox.showinfo("Profile Created", f"Profile created successfully for {name}.")
+    main_menu(email)
 
 # Handle expenses file
 def handle_expenses_file(email):
@@ -174,19 +184,16 @@ def edit_delete_expense(expenses_file, df):
 
 # Monthly expenses
 def get_monthly_expenses(df, year, month):
-    monthly_expenses = df[(pd.to_datetime(df['Date']).dt.year == year) &
-                          (pd.to_datetime(df['Date']).dt.month == month)]['Amount'].sum()
+    monthly_expenses = df[(pd.to_datetime(df['Date']).dt.year == year) & (pd.to_datetime(df['Date']).dt.month == month)]['Amount'].sum()
     return monthly_expenses
 
 # Category totals
 def get_category_totals(df, year, month):
-    return df[(pd.to_datetime(df['Date']).dt.year == year) &
-              (pd.to_datetime(df['Date']).dt.month == month)].groupby('Category')['Amount'].sum()
+    return df[(pd.to_datetime(df['Date']).dt.year == year) & (pd.to_datetime(df['Date']).dt.month == month)].groupby('Category')['Amount'].sum()
 
 # Plot category expenses
 def plot_expenses_by_category(df, year, month, budget):
-    monthly_expenses = df[(pd.to_datetime(df['Date']).dt.year == year) &
-                          (pd.to_datetime(df['Date']).dt.month == month)]
+    monthly_expenses = df[(pd.to_datetime(df['Date']).dt.year == year) & (pd.to_datetime(df['Date']).dt.month == month)]
     if monthly_expenses.empty:
         messagebox.showinfo("No Expenses", "No expenses for the selected month.")
         return
@@ -208,67 +215,63 @@ def plot_expenses_by_category(df, year, month, budget):
     canvas.draw()
     canvas.get_tk_widget().pack(fill=tk.BOTH, expand=1)
 
-# Prepare budget data for trend
-def prepare_budget_data_for_trend():
-    """Generates budget data for the last 6 months based on profile budgets."""
-    profiles_df = load_profiles()
-    last_6_months_data = []
+# Prepare budget data for trend analysis
+def prepare_budget_data_for_trend(data):
+    if data.empty:
+        return None
 
-    # Generate last 6 months budget data
-    for i in range(6):
-        month = (datetime.now() - relativedelta(months=i)).strftime('%Y-%m')
-        for _, profile in profiles_df.iterrows():
-            last_6_months_data.append({'YearMonth': month, 'Budget': profile['Budget']})
+    data['Date'] = pd.to_datetime(data['Date'], format='%Y-%m-%d')
+    data.set_index('Date', inplace=True)
+    data = data.sort_index()
+    monthly_expenses = data.resample('MS').sum()  # Resample to start of the month
+    monthly_expenses['MonthIndex'] = range(len(monthly_expenses))
+    return monthly_expenses
 
-    return pd.DataFrame(last_6_months_data)
+# Train Random Forest model and make predictions
+def train_and_predict_model(data, future_months=6):
+    monthly_expenses = prepare_budget_data_for_trend(data)
 
-# Prepare dataset for training
-def process_expense_data(expenses_df):
-    """Processes expense data for the desired timeframe (example: 2018-2019) and aggregates it by Year-Month."""
-    expenses_df['Date'] = pd.to_datetime(expenses_df['Date'])
-    expenses_df['YearMonth'] = expenses_df['Date'].dt.to_period('M').astype(str)
-    expenses_df = expenses_df[expenses_df['Date'].dt.year.isin([2018, 2019])]
+    if monthly_expenses is None or len(monthly_expenses) <= 1:
+        messagebox.showerror("Insufficient Data", "Not enough data to train the model.")
+        return None, None
 
-    # Aggregate expenses
-    return expenses_df.groupby('YearMonth', as_index=False)['Amount'].sum().rename(columns={'Amount': 'Expense'})
+    # Filter data for the range 2018 to 2019
+    monthly_expenses = monthly_expenses[(monthly_expenses.index >= '2018-01-01') & (monthly_expenses.index <= '2019-09-30')]
 
-# Forecast expenses
-def forecast_expenses(expense_data):
-    """Applies linear regression to predict future expenses."""
-    expense_data['MonthIndex'] = np.arange(len(expense_data))
+    if monthly_expenses.empty:
+        messagebox.showerror("Insufficient Data", "Not enough data to train the model within the specified range.")
+        return None, None
 
-    # Train Linear Regression Model
-    X = expense_data[['MonthIndex']]
-    y = expense_data['Expense']
-    model = LinearRegression()
-    model.fit(X, y)
+    X = monthly_expenses[['MonthIndex']]
+    y = monthly_expenses['Amount']
 
-    # Predict for the next 6 months
-    future_months = 6
-    last_month_index = expense_data['MonthIndex'].max()
-    future_indices = np.arange(last_month_index + 1, last_month_index + future_months + 1).reshape(-1, 1)
-    future_forecast = model.predict(future_indices)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Generate future dates
-    last_date = pd.to_datetime(expense_data['YearMonth'].max())
-    future_dates = [last_date + relativedelta(months=i) for i in range(1, future_months + 1)]
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
 
-    return pd.DataFrame({'YearMonth': [d.strftime('%Y-%m') for d in future_dates], 'Expense': future_forecast})
+    # Predict future expenses
+    last_index = monthly_expenses['MonthIndex'].max()
+    future_indices = np.arange(last_index + 1, last_index + 1 + future_months).reshape(-1, 1)
+    future_dates = [monthly_expenses.index.max() + relativedelta(months=i) for i in range(1, future_months + 1)]
+    future_expenses = model.predict(future_indices)
 
-# Plot actual and predicted expenses
-def plot_budget_trend(expense_data, forecast_data):
-    """Plots actual and predicted expenses."""
+    forecast_df = pd.DataFrame({'Date': future_dates, 'Predicted_Expense': future_expenses})
+    forecast_df.set_index('Date', inplace=True)
+
+    return monthly_expenses, forecast_df
+
+# Plot budget trend
+def plot_budget_trend(monthly_expenses, forecast_df, budget):
     plt.figure(figsize=(10, 6))
-    plt.plot(expense_data['YearMonth'], expense_data['Expense'], marker='o', linestyle='-', color='blue', label='Actual Expense')
-    plt.plot(forecast_data['YearMonth'], forecast_data['Expense'], marker='o', linestyle='--', color='red', label='Predicted Expense')
-
-    plt.title('Expense Trend & Forecast')
-    plt.xlabel('Year-Month')
-    plt.ylabel('Total Expense (€)')
-    plt.xticks(rotation=45)
+    plt.plot(monthly_expenses.index, monthly_expenses['Amount'], label='Historical Data', marker='o')
+    plt.plot(forecast_df.index, forecast_df['Predicted_Expense'], label='Predicted Future', linestyle='--', marker='x')
+    plt.axhline(y=budget, color='r', linestyle='--', label='Budget')
+    plt.title('Expense Forecast')
+    plt.xlabel('Date')
+    plt.ylabel('Amount')
     plt.legend()
     plt.grid(True)
-    plt.tight_layout()
     plt.show()
 
 # Select month and year
@@ -280,103 +283,137 @@ def select_month_year():
         return None, None
     return year, month
 
+# Show expense management tips
+def show_expense_management_tips():
+    tips_window = tk.Toplevel(root)
+    tips_window.title("Expense Management Tips")
+    tips_text = tk.Text(tips_window, wrap=tk.WORD)
+    tips_text.insert(tk.END, """
+    Expense Management Tips:
+    1. Track your expenses regularly.
+    2. Create a detailed budget and stick to it.
+    3. Prioritize your spending. Focus on needs before wants.
+    4. Use cash for discretionary spending to avoid overspending.
+    5. Save money by preparing meals at home instead of dining out.
+    6. Negotiate better rates for recurring expenses (e.g., insurance, subscriptions).
+    7. Automate savings to ensure your financial goals are met.
+    8. Review your budget periodically and make adjustments as necessary.
+    """)
+    tips_text.pack()
+
+# Plot heatmap for spending patterns
+def plot_heatmap(df):
+    df['Date'] = pd.to_datetime(df['Date'])
+    df['Day'] = df['Date'].dt.day
+    df['Month'] = df['Date'].dt.month
+    df['Year'] = df['Date'].dt.year
+
+    pivot_table = df.pivot_table(values='Amount', index=['Year', 'Month'], columns='Day', aggfunc='sum', fill_value=0)
+
+    plt.figure(figsize=(12, 8))
+    sns.heatmap(pivot_table, cmap='YlGnBu', linewidths=.5)
+    plt.title('Spending Patterns Heatmap')
+    plt.xlabel('Day of the Month')
+    plt.ylabel('Month')
+    plt.show()
+
 # Main menu
 def main_menu(email):
-    try:
-        # Load the dataset from user_profiles.csv
-        profiles_df = load_profiles()
-        user_profile = profiles_df[profiles_df['Email'] == email].iloc[0]
-        expenses_file, df = handle_expenses_file(email)
-        budget = user_profile['Budget']
-        expenses_by_month = {}
+    expenses_file, df = handle_expenses_file(email)
+    profiles_df = load_profiles()
+    user_profile = profiles_df[profiles_df['Email'] == email].iloc[0]
+    budget = user_profile['Budget']
+    expenses_by_month = {}
 
-        # Load and prepare expense data
-        expense_data = pd.read_csv(expenses_file)
-        expense_data['Date'] = pd.to_datetime(expense_data['Date'])
-        expense_data_processed = process_expense_data(expense_data)
+    def show_view_expenses():
+        view_expenses(df)
 
-        # Forecast expenses
-        forecast_data = forecast_expenses(expense_data_processed)
+    def show_add_expense():
+        nonlocal df, expenses_by_month
+        df, expenses_by_month = add_expense(expenses_file, df, budget, expenses_by_month)
 
-        def show_view_expenses():
-            view_expenses(df)
+    def show_edit_delete_expense():
+        nonlocal df
+        df = edit_delete_expense(expenses_file, df)
 
-        def show_add_expense():
-            nonlocal df, expenses_by_month
-            df, expenses_by_month = add_expense(expenses_file, df, budget, expenses_by_month)
+    def show_monthly_summary():
+        year, month = select_month_year()
+        if year is None or month is None:
+            return
+        total_expenses = get_monthly_expenses(df, year, month)
+        category_totals = get_category_totals(df, year, month)
+        summary_window = tk.Toplevel(root)
+        summary_window.title(f"Monthly Summary - {datetime(year, month, 1).strftime('%B %Y')}")
+        summary_text = tk.Text(summary_window)
+        summary_text.insert(tk.END, f"Total expenses for {datetime(year, month, 1).strftime('%B %Y')}: €{total_expenses:.2f}\n")
+        summary_text.insert(tk.END, "Category breakdown:\n")
+        for category, amount in category_totals.items():
+            summary_text.insert(tk.END, f"{category}: €{amount:.2f}\n")
+        summary_text.pack()
 
-        def show_edit_delete_expense():
-            nonlocal df
-            df = edit_delete_expense(expenses_file, df)
+    def show_plot_expenses_by_category():
+        year, month = select_month_year()
+        if year is None or month is None:
+            return
+        plot_expenses_by_category(df, year, month, budget)
 
-        def show_monthly_summary():
-            year, month = select_month_year()
-            if year is None or month is None:
-                return
-            total_expenses = get_monthly_expenses(df, year, month)
-            category_totals = get_category_totals(df, year, month)
-            summary_window = tk.Toplevel(root)
-            summary_window.title(f"Monthly Summary - {datetime(year, month, 1).strftime('%B %Y')}")
-            summary_text = tk.Text(summary_window)
-            summary_text.insert(tk.END, f"Total expenses for {datetime(year, month, 1).strftime('%B %Y')}: €{total_expenses:.2f}\n")
-            summary_text.insert(tk.END, "Category breakdown:\n")
-            for category, amount in category_totals.items():
-                summary_text.insert(tk.END, f"{category}: €{amount:.2f}\n")
-            summary_text.pack()
+    def show_budget_trend():
+        monthly_expenses, forecast_df = train_and_predict_model(df)
+        if monthly_expenses is not None and forecast_df is not None:
+            plot_budget_trend(monthly_expenses, forecast_df, budget)
 
-        def show_plot_expenses_by_category():
-            year, month = select_month_year()
-            if year is None or month is None:
-                return
-            plot_expenses_by_category(df, year, month, budget)
+    def show_select_month_year():
+        year, month = select_month_year()
+        if year is None or month is None:
+            return
+        messagebox.showinfo("Selected Month and Year", f"Selected Month and Year: {datetime(year, month, 1).strftime('%B %Y')}")
 
-        def show_budget_trend():
-            plot_budget_trend(expense_data_processed, forecast_data)
+    def show_tips():
+        show_expense_management_tips()
 
-        def show_select_month_year():
-            year, month = select_month_year()
-            if year is None or month is None:
-                return
-            messagebox.showinfo("Selected Month and Year", f"Selected Month and Year: {datetime(year, month, 1).strftime('%B %Y')}")
+    def show_heatmap():
+        plot_heatmap(df)
 
-        menu_window = tk.Toplevel(root)
-        menu_window.title("Expense Tracker Menu")
-        menu_window.geometry("400x400")
-        menu_window.configure(bg='#f0f0f0')
+    # Create main menu window
+    menu_window = tk.Toplevel(root)
+    menu_window.title("Expense Tracker Menu")
 
-        buttons = [
-            ("View Expenses", show_view_expenses),
-            ("Add Expense", show_add_expense),
-            ("Edit/Delete Expense", show_edit_delete_expense),
-            ("View Monthly Summary", show_monthly_summary),
-            ("Plot Expenses by Category", show_plot_expenses_by_category),
-            ("View Budget Trend", show_budget_trend),
-            ("Select Month and Year", show_select_month_year),
-            ("Exit", menu_window.destroy)
-        ]
+    button_frame = ttk.Frame(menu_window)
+    button_frame.pack(padx=10, pady=10)
 
-        for text, command in buttons:
-            button = ttk.Button(menu_window, text=text, command=command, style='TButton')
-            button.pack(fill=tk.X, padx=20, pady=10)
+    buttons = [
+        ("View Expenses", show_view_expenses),
+        ("Add Expense", show_add_expense),
+        ("Edit/Delete Expense", show_edit_delete_expense),
+        ("View Monthly Summary", show_monthly_summary),
+        ("Plot Expenses by Category", show_plot_expenses_by_category),
+        ("View Budget Trend", show_budget_trend),
+        ("Select Month and Year", show_select_month_year),
+        ("Expense Management Tips", show_tips),
+        ("View Spending Patterns Heatmap", show_heatmap),
+        ("Exit", menu_window.destroy)
+    ]
 
-        style = ttk.Style()
-        style.configure('TButton', font=('Arial', 12), background='#4CAF50', foreground='white')
-        style.map('TButton', background=[('active', '#45a049')])
-
-    except Exception as e:
-        messagebox.showerror("Error", f"An error occurred: {str(e)}")
+    for text, command in buttons:
+        button = ttk.Button(button_frame, text=text, command=command)
+        button.pack(fill=tk.X, padx=10, pady=5)
 
 if __name__ == "__main__":
     initialize_profiles_file()
 
-    root = tk.Tk()
+    # Create main window with ThemedTk
+    root = ThemedTk(theme="equilux")  # You can choose different themes like 'radiance', 'aquativo', 'clearlooks', etc.
     root.title("Expense Tracker")
-    root.geometry("400x200")
-    root.configure(bg='#f0f0f0')
 
-    style = ttk.Style()
-    style.configure('TButton', font=('Arial', 14), background='#1E90FF', foreground='white')
-    style.map('TButton', background=[('active', '#1E81B0')])
+    # Set the icon (optional)
+    logo_path = 'logo.png'  # Replace with the path to your logo image
+    if os.path.exists(logo_path):
+        logo_img = ImageTk.PhotoImage(Image.open(logo_path).resize((50, 50), Image.ANTIALIAS))
+        logo_label = ttk.Label(root, image=logo_img)
+        logo_label.pack(padx=10, pady=5)
+
+    # Ask the user if they have an account
+    response = messagebox.askyesno("Account Check", "Do you already have an account?")
 
     def on_login():
         email = email_entry.get().strip()
@@ -385,17 +422,19 @@ if __name__ == "__main__":
             main_menu(email)
         else:
             messagebox.showinfo("No Profile", "No profile found for this email.")
-            create_profile(email)
+            create_profile()
 
-    login_frame = ttk.Frame(root)
-    login_frame.pack(pady=20)
+    if response:
+        email_frame = ttk.Frame(root)
+        email_frame.pack(padx=10, pady=10)
 
-    email_label = ttk.Label(login_frame, text="Enter your email:")
-    email_label.pack(pady=5)
-    email_entry = ttk.Entry(login_frame)
-    email_entry.pack(pady=5)
-
-    login_button = ttk.Button(login_frame, text="Login", command=on_login)
-    login_button.pack(pady=5)
+        email_label = ttk.Label(email_frame, text="Enter your email:")
+        email_label.pack(side=tk.LEFT, padx=5, pady=5)
+        email_entry = ttk.Entry(email_frame)
+        email_entry.pack(side=tk.LEFT, padx=5, pady=5)
+        login_button = ttk.Button(email_frame, text="Login", command=on_login)
+        login_button.pack(side=tk.LEFT, padx=5, pady=5)
+    else:
+        create_profile()
 
     root.mainloop()
